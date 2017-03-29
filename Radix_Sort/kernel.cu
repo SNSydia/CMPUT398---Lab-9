@@ -15,14 +15,6 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort =
 		if (abort) exit(code);
 	}
 }
-__global__ void blockadd(int* g_aux, int* g_odata, int length){
-	int id = blockIdx.x*blockDim.x + threadIdx.x;
-
-	if (id < length && blockIdx.x > 0){
-		g_odata[id] += g_aux[blockIdx.x];
-	}
-
-}
 
 __global__ void split(int *in_d, int *out_d, int length, int shamt) {
     int index = threadIdx.x + blockDim.x * blockIdx.x;
@@ -30,6 +22,7 @@ __global__ void split(int *in_d, int *out_d, int length, int shamt) {
 
 	if (index < length) {
 		bit = in_d[index] & (1 << shamt);
+		//bit = ~bit;
 
 		if (bit > 0)
             bit = 1;
@@ -39,6 +32,7 @@ __global__ void split(int *in_d, int *out_d, int length, int shamt) {
 		__syncthreads();
 
 		out_d[index] = 1 - bit;
+
 	}
 
 }
@@ -46,7 +40,7 @@ __global__ void split(int *in_d, int *out_d, int length, int shamt) {
 __global__ void indef(int *in_d,  int *rev_bit_d,  int length,  int last_input) {
 	int index = threadIdx.x + blockDim.x * blockIdx.x;
 
-	int x = in_d[length - 1] + rev_bit_d[length-1];
+	int x = in_d[length - 1] + rev_bit_d[length - 1];
 	__syncthreads();
 
 	if (index < length) {
@@ -54,6 +48,7 @@ __global__ void indef(int *in_d,  int *rev_bit_d,  int length,  int last_input) 
 			__syncthreads();
 			int val = in_d[index];
 			in_d[index] = index - val + x;
+
 		}
 	}
 
@@ -63,11 +58,11 @@ __global__ void scatter( int *in_d,  int *index_d,  int *out_d,  int length) {
 	int index = threadIdx.x + blockDim.x * blockIdx.x;
 
 	if (index < length) {
+
 		int val = index_d[index];
 		__syncthreads();
-		if (val < length){
-			out_d[val] = in_d[index];
-		}
+
+		out_d[val] = in_d[index];
 
 	}
 }
@@ -79,8 +74,9 @@ __global__ void scan(int*g_odata, int *g_idata, int *g_aux, int length){
 
 
 	if (thread < length){
-		temp[threadIdx.x] = g_idata[thread];
+		temp[threadIdx.x] = g_idata[thread]; 
 	}
+
 
 	for (unsigned int stride = 1; stride <= threadIdx.x; stride *= 2){
 		__syncthreads();
@@ -95,14 +91,10 @@ __global__ void scan(int*g_odata, int *g_idata, int *g_aux, int length){
 
 	__syncthreads();
 
-	if (thread + 1 < length)
-        g_odata[thread + 1] = temp[threadIdx.x];
-
-	if (g_aux != NULL && threadIdx.x == blockDim.x - 1){
-
-		g_aux[blockIdx.x] = g_odata[thread + 1];
-		g_odata[thread + 1] = 0;
+	if (thread + 1 < length){
+		g_odata[thread + 1] = temp[threadIdx.x];
 	}
+
 }
 
 void swap(int* in, int* out){
@@ -113,7 +105,7 @@ void swap(int* in, int* out){
     out = tmp;
 }
 
-void sort(int* deviceInput, int *deviceOutput, int numElements)
+void sort(int* deviceInput, int *deviceOutput, int numElements, int* hostInput)
 {
 	//TODO: Modify this to complete the functionality of the sort on the deivce
 	int numBlocks = (numElements / BLOCK_SIZE) + 1;
@@ -128,19 +120,24 @@ void sort(int* deviceInput, int *deviceOutput, int numElements)
 
 	for (int bit = 0; bit < 15; bit++){
 
-		split<<<grid, block>>>(deviceInput, deviceOutput, numElements, bit);
+		split << <grid, block >> >(deviceInput, deviceOutput, numElements, bit);
 		cudaDeviceSynchronize();
 
 		scan << <grid, block >> >(help2, deviceOutput, NULL, numElements);
 		cudaDeviceSynchronize();
 
-		indef << <grid, block >> >(help2, deviceOutput, numElements, deviceInput[numElements - 1]);
+		indef << <grid, block >> >(help2, deviceOutput, numElements, hostInput[numElements - 1]);
 		cudaDeviceSynchronize();
 
-		scatter<<<grid, block>>>(deviceInput, help2, deviceOutput, numElements);
+		scatter << <grid, block >> >(deviceInput, help2, deviceOutput, numElements);
 		cudaDeviceSynchronize();
 
-		swap(deviceImput, deviceOutput);
+		//swap(deviceInput, deviceOutput);
+		int *tmp;
+		tmp = deviceInput;
+		deviceInput = deviceOutput;
+		deviceOutput= tmp;
+	}
 }
 
 
@@ -176,7 +173,7 @@ int main(int argc, char **argv) {
 	wbTime_stop(GPU, "Copying input memory to the GPU.");
 
 	wbTime_start(Compute, "Performing CUDA computation");
-	sort(deviceInput, deviceOutput, numElements);
+	sort(deviceInput, deviceOutput, numElements, hostInput);
 	wbTime_stop(Compute, "Performing CUDA computation");
 
 	wbTime_start(Copy, "Copying output memory to the CPU");
